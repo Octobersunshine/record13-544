@@ -103,10 +103,23 @@ func (h *Handler) downloadFile(w http.ResponseWriter, r *http.Request, t *task.T
 		return
 	}
 
+	if t.FilePath == "" || t.FileName == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusGone)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "file has expired and been cleaned up",
+			"status": string(task.StatusExpired),
+		})
+		return
+	}
+
 	if _, err := os.Stat(t.FilePath); os.IsNotExist(err) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusNotFound)
-		json.NewEncoder(w).Encode(map[string]string{"error": "file not found"})
+		w.WriteHeader(http.StatusGone)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error":  "file has expired and been cleaned up",
+			"status": string(task.StatusExpired),
+		})
 		return
 	}
 

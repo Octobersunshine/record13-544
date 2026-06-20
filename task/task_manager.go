@@ -1,7 +1,10 @@
 package task
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os"
 	"sync"
 	"time"
 )
@@ -13,6 +16,7 @@ const (
 	StatusRunning   Status = "running"
 	StatusCompleted Status = "completed"
 	StatusFailed    Status = "failed"
+	StatusExpired   Status = "expired"
 )
 
 type Task struct {
@@ -28,13 +32,31 @@ type Task struct {
 }
 
 type Manager struct {
-	mu    sync.RWMutex
-	tasks map[string]*Task
+	mu             sync.RWMutex
+	tasks          map[string]*Task
+	ttl            time.Duration
+	cleanupInterval time.Duration
 }
 
 func NewManager() *Manager {
 	return &Manager{
-		tasks: make(map[string]*Task),
+		tasks:           make(map[string]*Task),
+		ttl:            30 * time.Minute,
+		cleanupInterval: 5 * time.Minute,
+	}
+}
+
+func NewManagerWithCleanup(ttl, cleanupInterval time.Duration) *Manager {
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
+	if cleanupInterval <= 0 {
+		cleanupInterval = 5 * time.Minute
+	}
+	return &Manager{
+		tasks:           make(map[string]*Task),
+		ttl:            ttl,
+		cleanupInterval: cleanupInterval,
 	}
 }
 
@@ -99,4 +121,72 @@ func (m *Manager) SetFailed(id string, errMsg string) {
 		t.Error = errMsg
 		t.CompletedAt = time.Now()
 	}
+}
+
+func (m *Manager) Remove(id string) *Task {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	t, ok := m.tasks[id]
+	if !ok {
+		return nil
+	}
+	delete(m.tasks, id)
+	return t
+}
+
+func (m *Manager) StartCleanup(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(m.cleanupInterval)
+		defer ticker.Stop()
+
+		log.Printf("[cleanup] started: ttl=%s, interval=%s", m.ttl, m.cleanupInterval)
+
+		for {
+			select {
+			case <-ctx.Done():
+				log.Printf("[cleanup] stopped")
+				return
+			case <-ticker.C:
+				m.sweep()
+			}
+		}
+	}()
+}
+
+func (m *Manager) sweep() {
+	now := time.Now()
+	var expired []*Task
+
+	m.mu.RLock()
+	for _, t := range m.tasks {
+		if t.Status == StatusCompleted || t.Status == StatusFailed {
+			if !t.CompletedAt.IsZero() && now.Sub(t.CompletedAt) > m.ttl {
+				expired = append(expired, t)
+			}
+		}
+	}
+	m.mu.RUnlock()
+
+	if len(expired) == 0 {
+		return
+	}
+
+	for _, t := range expired {
+		if t.FilePath != "" {
+			if err := os.Remove(t.FilePath); err != nil && !os.IsNotExist(err) {
+				log.Printf("[cleanup] failed to delete file %s: %v", t.FilePath, err)
+				continue
+			}
+			log.Printf("[cleanup] deleted file: %s", t.FilePath)
+		}
+
+		m.mu.Lock()
+		delete(m.tasks, t.ID)
+		m.mu.Unlock()
+
+		log.Printf("[cleanup] removed expired task: %s (status=%s, age=%s)",
+			t.ID, t.Status, now.Sub(t.CompletedAt).Round(time.Second))
+	}
+
+	log.Printf("[cleanup] swept %d expired task(s)", len(expired))
 }
