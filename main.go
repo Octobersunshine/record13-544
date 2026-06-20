@@ -17,8 +17,8 @@ import (
 func main() {
 	addr := ":8080"
 	outputDir := "./exports"
-	ttl := 30 * time.Minute
-	cleanupInterval := 5 * time.Minute
+	ttl := 24 * time.Hour
+	cleanupInterval := 1 * time.Hour
 
 	if len(os.Args) > 1 {
 		addr = ":" + os.Args[1]
